@@ -1,0 +1,7 @@
+data/
+results/
+latex/
+docs/
+.git/
+**/__pycache__/
+*.tar.gz

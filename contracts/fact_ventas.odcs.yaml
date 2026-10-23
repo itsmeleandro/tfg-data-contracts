@@ -1,0 +1,29 @@
+apiVersion: v3.0.0
+kind: DataContract
+id: fact-ventas
+name: Contrato de la tabla de hechos (frontera intermedia -> consumo)
+version: 1.0.0
+status: active
+schema:
+  - name: fact_ventas
+    physicalName: fact_ventas
+    properties:
+      - { name: invoice,     logicalType: string,  required: true }
+      - { name: stock_code,  logicalType: string,  required: true }
+      - { name: customer_id, logicalType: integer, required: true }
+      - { name: date_key,    logicalType: date,    required: true }
+      - { name: country,     logicalType: string,  required: true }
+      - { name: quantity,    logicalType: integer, required: true }
+      - { name: price,       logicalType: number,  required: true }
+      - { name: amount,      logicalType: number,  required: true }
+    quality:
+      - { rule: unique, columns: [invoice, stock_code],
+          description: grano de linea de factura }
+      - { rule: range, column: quantity, min: -1000, max: 10000,
+          description: dominio operativo de cantidad }
+      - { rule: referential, column: country,
+          refTable: dim_geografia, refColumn: country,
+          description: integridad referencial hechos -> dim_geografia }
+      - { rule: referential, column: customer_id,
+          refTable: dim_cliente, refColumn: customer_id,
+          description: integridad referencial hechos -> dim_cliente }

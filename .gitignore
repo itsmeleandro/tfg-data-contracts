@@ -1,0 +1,15 @@
+# En el repo van solo el código, el README y el PDF del paper.
+# Todo lo demás es local.
+data/
+results/
+docs/
+latex/*
+!latex/paper_rojas_borrador.pdf
+
+# Artefactos de Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.DS_Store

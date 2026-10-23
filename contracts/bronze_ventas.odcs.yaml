@@ -1,0 +1,36 @@
+apiVersion: v3.0.0
+kind: DataContract
+id: bronze-ventas
+name: Contrato de la fuente transaccional de ventas (capa de ingesta)
+version: 1.0.0
+status: active
+description:
+  purpose: >
+    Especifica lo que la fuente Online Retail II se compromete a entregar.
+    Escrito a partir del diccionario de datos del dataset, ANTES de definir
+    el generador de fallas (ver amenazas a la validez).
+  usage: >
+    Se verifica en la frontera ingesta -> intermedia, sobre la tabla de la capa
+    de ingesta, antes de cualquier transformacion semantica.
+schema:
+  - name: bronze_ventas
+    physicalName: bronze_ventas
+    # `physicalName` por propiedad: el nombre logico es el del diccionario de
+    # datos de la fuente; el fisico es el admitido por el formato de tabla
+    # (Delta Lake no acepta espacios sin column mapping).
+    properties:
+      - { name: Invoice,     physicalName: Invoice,     logicalType: string,  required: true }
+      - { name: StockCode,   physicalName: StockCode,   logicalType: string,  required: true }
+      - { name: Description, physicalName: Description, logicalType: string,  required: false }
+      - { name: Quantity,    physicalName: Quantity,    logicalType: integer, required: true }
+      - { name: InvoiceDate, physicalName: InvoiceDate, logicalType: string,  required: true }
+      - { name: Price,       physicalName: Price,       logicalType: number,  required: true }
+      - { name: Customer ID, physicalName: Customer_ID, logicalType: number,  required: true }
+      - { name: Country,     physicalName: Country,     logicalType: string,  required: true }
+    quality:
+      - { rule: unique, columns: [Invoice, StockCode],
+          description: clave de negocio factura+producto sin duplicados }
+      - { rule: range, column: Quantity, min: -1000, max: 10000,
+          description: cantidad dentro del dominio operativo }
+      - { rule: range, column: Price, min: 0, max: 50000,
+          description: precio no negativo y acotado }
