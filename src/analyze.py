@@ -93,12 +93,18 @@ def medir(df):
          "control": len(limpias),
          # tamaño de la muestra, sin las filas que agrega la falla
          "filas": limpias.rows_source.median()}
+    # Los tiempos se redondean a centésimas antes de operar: el paper los informa
+    # así, y los sobrecostos y los equilibrios tienen que poder recalcularse con
+    # esos mismos valores.
+    def seg(ms):
+        return round(ms / 1000, 2)
+
     for v in "ABC":
-        m[f"c_{v}"] = limpias[limpias.variant == v].wall_ms_total.median() / 1000
+        m[f"c_{v}"] = seg(limpias[limpias.variant == v].wall_ms_total.median())
         m[f"d_{v}"] = runs[runs.variant == v].detected.mean()
         det = runs[(runs.variant == v) & (runs.detected == 1)]
-        m[f"a_{v}"] = det.wall_ms_total.median() / 1000 if len(det) else m[f"c_{v}"]
-    m["r"] = runs[runs.variant == "A"].wall_ms_total.median() / 1000
+        m[f"a_{v}"] = seg(det.wall_ms_total.median()) if len(det) else m[f"c_{v}"]
+    m["r"] = seg(runs[runs.variant == "A"].wall_ms_total.median())
     for v in ("B", "C"):
         m[f"pe_{v}"] = equilibrio(m, v, m["r"])
     # Sensibilidad de C a k, el costo del recálculo medido en corridas limpias
