@@ -1,7 +1,9 @@
-# En el repo van solo el código, el README y el PDF del paper.
-# Todo lo demás es local.
+# En el repo van el código, el README, el PDF del paper y los resultados
+# crudos de la corrida que informa el paper. Todo lo demás es local.
 data/
-results/
+results/*
+!results/raw_runs.csv
+!results/poblacion.json
 docs/
 latex/*
 !latex/paper_rojas_borrador.pdf

@@ -1,13 +1,11 @@
-"""analyze.py — de raw_runs.csv a los artefactos del paper.
+"""analyze.py — de raw_runs.csv a lo que se midió.
 
-Genera en --outdir (por defecto latex/generado/, de donde los toma el paper):
-  tabla1_deteccion.tex     tabla de tasa de detección por clase y variante
-  tabla2_contaminacion.tex tabla de volumen defectuoso y desvío publicado
-  fig1_capas.pdf/.png      figura de capa de detección por variante
-  fig2_equilibrio.pdf/.png figura del punto de equilibrio
-  metricas.tex             macros LaTeX con todos los números citados en el texto
+Escribe en el directorio del CSV de entrada (results/ o results/_smoke/):
+  resumen.txt   detección, capa, volumen contaminado, costo y punto de equilibrio
+  tablero.png   lo mismo, en un tablero de gráficos
+y muestra el resumen en la consola. No escribe en ningún otro lado.
 
-Uso: python -m src.analyze [--in results/raw_runs.csv] [--outdir latex/generado]
+Uso: python -m src.analyze [--in results/raw_runs.csv]
 """
 from __future__ import annotations
 import argparse, json, os, sys, warnings
@@ -15,10 +13,11 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 # El desvío de la clase drift no es calculable (el total publicado es nulo):
-# su mediana es vacía, numpy avisa y la tabla informa "no calculable".
+# su mediana es vacía, numpy avisa y el resumen informa "no calculable".
 warnings.filterwarnings("ignore", message="Mean of empty slice")
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe_fx
+from matplotlib.patches import Rectangle
 
 from .injector import FAULTS as ORDER
 
@@ -44,175 +43,21 @@ VARIANTE = {"A": "A — sin verificación", "B": "B — restricciones del motor"
 RAMPA_CAPA = {"ingesta": "#86b6ef", "intermedia": "#2a78d6", "ninguna": "#104281"}
 SERIE = {"A": "#2a78d6", "B": "#eb6834", "C": "#1baf7a"}
 TRAZO = {"A": (0, (1, 1.6)), "B": (0, (5, 2)), "C": "solid"}
-TINTA, TINTA_TENUE = "#1a1a19", "#6b6a66"
+TINTA, TENUE, GRILLA, FONDO = "#1a1a19", "#6b6a66", "#e6e5e1", "#fcfcfb"
 
 
-def estilo():
-    plt.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["Times New Roman", "Nimbus Roman", "DejaVu Serif"],
-        "font.size": 8, "axes.labelsize": 8, "axes.titlesize": 8,
-        "xtick.labelsize": 7.5, "ytick.labelsize": 7.5, "legend.fontsize": 7,
-        "axes.edgecolor": TINTA_TENUE, "axes.linewidth": 0.6,
-        "xtick.color": TINTA_TENUE, "ytick.color": TINTA_TENUE,
-        "text.color": TINTA, "axes.labelcolor": TINTA,
-        "figure.dpi": 300, "savefig.dpi": 300, "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.02,
-    })
-
-
-# ------------------------------------------------------------------- utilidades
 def es(x, dec=0):
-    """Número con separadores del español: miles con punto, decimales con coma
-    y signo menos tipográfico ($-$, no guion)."""
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return "---"
-    entero, _, frac = f"{float(x):,.{dec}f}".partition(".")
-    entero = entero.replace(",", ".").replace("-", "$-$")
+    """Número con separadores del español: miles con punto y decimales con coma."""
+    if x is None or pd.isna(x):
+        return "—"
+    x = round(float(x), dec) + 0.0  # sin "−0": un cero redondeado no tiene signo
+    entero, _, frac = f"{x:,.{dec}f}".partition(".")
+    entero = entero.replace(",", ".").replace("-", "−")
     return entero + ("," + frac if frac else "")
 
 
-def escribir(outdir, nombre, texto):
-    with open(os.path.join(outdir, nombre), "w") as fh:
-        fh.write(texto)
-
-
-def guardar_fig(fig, outdir, nombre):
-    for ext in ("pdf", "png"):
-        fig.savefig(os.path.join(outdir, f"{nombre}.{ext}"))
-    plt.close(fig)
-
-
-# ================================================================ tablas I y II
-def tabla_tex(caption, label, columnas, encabezado, filas):
-    cuerpo = "\n".join(filas)
-    return f"""\\begin{{table}}[t]
-\\caption{{{caption}}}
-\\label{{{label}}}
-\\centering
-\\footnotesize
-\\begin{{tabular}}{{@{{}}{columnas}@{{}}}}
-\\toprule
-{encabezado} \\\\
-\\midrule
-{cuerpo}
-\\bottomrule
-\\end{{tabular}}
-\\end{{table}}
-"""
-
-
-def tabla1(runs, outdir):
-    det = (runs.groupby(["fault", "variant"]).detected.mean() * 100).unstack()
-    det = det.reindex(ORDER)
-    filas = []
-    for f in ORDER:
-        celdas = " & ".join(f"{det.loc[f, v]:.0f}\\,\\%" for v in "ABC")
-        filas.append(f"{ETIQUETA_FALLA[f]} & {DIMENSION[f]} & {celdas} \\\\")
-    escribir(outdir, "tabla1_deteccion.tex", tabla_tex(
-        "Tasa de detección por clase de falla y variante", "tab:deteccion",
-        "llccc", "Clase de falla & Dimensión & A & B & C", filas))
-    return det
-
-
-def tabla2(runs, outdir):
-    """Qué le llega al consumo cuando nadie verifica (variante A)."""
-    a = runs[runs.variant == "A"]
-    filas = []
-    for f in ORDER:
-        s = a[a.fault == f]
-        dev = s.gold_dev_pct.median()
-        dev_txt = "no calculable" if pd.isna(dev) else f"{es(dev, 2)}\\,\\%"
-        filas.append(f"{ETIQUETA_FALLA[f]} & {es(s.injected.median())} & "
-                     f"{es(s.contaminated_fact.median())} & {dev_txt} \\\\")
-    escribir(outdir, "tabla2_contaminacion.tex", tabla_tex(
-        "Volumen defectuoso y desvío del total publicado en la variante sin\n"
-        "verificación (medianas)", "tab:contaminacion",
-        "lrrr", "Clase de falla & Inyectados & En hechos & Desvío del total", filas))
-
-
-# ====================================================================== figuras
-def figura1(runs, outdir):
-    piv = (runs.groupby(["variant", "detect_layer"]).size().unstack(fill_value=0)
-              .reindex(columns=LAYERS, fill_value=0))
-    piv = piv.div(piv.sum(1), axis=0) * 100
-
-    fig, ax = plt.subplots(figsize=(3.45, 1.95))
-    izq = pd.Series(0.0, index=piv.index)
-    y = list(range(len(piv.index)))
-    for capa in LAYERS:
-        val = piv[capa]
-        ax.barh(y, val, left=izq, height=0.62, color=RAMPA_CAPA[capa],
-                edgecolor="white", linewidth=1.2, zorder=3)
-        for i, (v, l) in enumerate(zip(val, izq)):
-            if v >= 9:  # rótulo directo: la identidad no queda solo en el color
-                ax.text(l + v / 2, i, f"{v:.0f}\u2009%", ha="center", va="center",
-                        color=TINTA if capa == "ingesta" else "white",
-                        fontsize=7, zorder=4)
-        izq = izq + val
-
-    ax.set_yticks(y); ax.set_yticklabels(list(piv.index))
-    ax.invert_yaxis()
-    ax.set_xlim(0, 100); ax.set_xticks([0, 25, 50, 75, 100])
-    ax.set_xlabel("corridas con falla inyectada [%]")
-    ax.set_ylabel("variante")
-    for s in ("top", "right", "left"):
-        ax.spines[s].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    ax.legend([plt.Rectangle((0, 0), 1, 1, color=RAMPA_CAPA[c]) for c in LAYERS],
-              [ETIQUETA_CAPA[c] for c in LAYERS], loc="upper center",
-              bbox_to_anchor=(0.5, 1.32), ncol=3, frameon=False,
-              handlelength=1.1, handleheight=0.9, columnspacing=1.2)
-    guardar_fig(fig, outdir, "fig1_capas")
-    return piv
-
-
-def _curva(m, v, p):
-    c, d, a, r = m[f"c_{v}"], m[f"d_{v}"], m[f"a_{v}"], m["r"]
-    return [(1 - x) * c + x * (d * a + (1 - d) * (c + r)) for x in p]
-
-
-def figura2(m, outdir):
-    # El eje llega hasta donde haga falta para mostrar los cruces.
-    cruces = [m[f"pe_{v}"] for v in ("B", "C") if m.get(f"pe_{v}")]
-    tope = min(100, max(25, round(max(cruces) * 100 * 1.35))) if cruces else 25
-    n = 400
-    p = [i * tope / (100 * n) for i in range(n + 1)]
-    fig, ax = plt.subplots(figsize=(3.45, 2.45))
-    for v in ("A", "B", "C"):
-        ax.plot([x * 100 for x in p], [y / 1000 for y in _curva(m, v, p)],
-                color=SERIE[v], linewidth=1.6, linestyle=TRAZO[v],
-                solid_capstyle="round", label=VARIANTE[v], zorder=3)
-
-    for v in ("B", "C"):
-        pe = m.get(f"pe_{v}")
-        if pe is not None and 0 < pe * 100 <= tope:
-            yv = _curva(m, v, [pe])[0] / 1000
-            ax.plot([pe * 100], [yv], "o", ms=4.5, color=SERIE[v],
-                    markeredgecolor="white", markeredgewidth=1.1, zorder=5)
-            ax.annotate(f"{es(pe * 100, 1)}\u2009%", (pe * 100, yv),
-                        textcoords="offset points", xytext=(6, -15),
-                        fontsize=7, color=SERIE[v], zorder=6,
-                        # halo: el rótulo nunca queda cruzado por una curva
-                        path_effects=[pe_fx.withStroke(linewidth=2.4,
-                                                       foreground="white")])
-
-    ax.set_xlabel("corridas con defecto [%]")
-    ax.set_ylabel("costo por corrida [s]")
-    ax.set_xlim(0, tope)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    ax.grid(axis="y", color="#e6e5e1", linewidth=0.5, zorder=0)
-    ax.set_axisbelow(True)
-    # Leyenda fuera del área de trazado: dentro pisa las curvas.
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.21), ncol=1,
-              frameon=False, handlelength=2.4, borderpad=0.1,
-              labelspacing=0.25, alignment="left")
-    guardar_fig(fig, outdir, "fig2_equilibrio")
-
-
-# ===================================================================== métricas
-def metricas(df, runs, limpias, det, piv, pob, outdir):
+# ===================================================================== medición
+def equilibrio(m, v, r):
     """Amortización del costo de verificar sobre una ventana de corridas.
 
     Sobre N corridas de las que una trae defecto, cada camino cuesta:
@@ -228,109 +73,269 @@ def metricas(df, runs, limpias, det, piv, pob, outdir):
 
     equivalente a un defecto cada 1/p* corridas. El factor d_V reparte el caso
     de la variante que no detecta todo: la fracción que se le escapa paga
-    también el recálculo. Todas las cantidades son medianas medidas; la única
-    que no se mide es la frecuencia de defecto, y por eso el resultado es una
-    curva y no un valor.
+    también el recálculo. Devuelve None si verificar nunca conviene.
     """
-    m = {}
+    den = m[f"d_{v}"] * (r + m[f"c_{v}"] - m[f"a_{v}"])
+    return (m[f"c_{v}"] - m["c_A"]) / den if den > 0 else None
+
+
+def costo(m, v, p):
+    """Recta que une el costo de una corrida limpia (p = 0) con el de una
+    corrida con defecto (p = 1)."""
+    c, d, a, r = m[f"c_{v}"], m[f"d_{v}"], m[f"a_{v}"], m["r"]
+    return (1 - p) * c + p * (d * a + (1 - d) * (c + r))
+
+
+def medir(df):
+    """Todo lo que se reporta, a partir de medianas del CSV. Tiempos en segundos."""
+    runs, limpias = df[df.fault != "ninguna"], df[df.fault == "ninguna"]
+    m = {"corridas": len(df), "clases": runs.fault.nunique(), "reps": df.rep.nunique(),
+         "control": len(limpias),
+         # tamaño de la muestra, sin las filas que agrega la falla
+         "filas": limpias.rows_source.median()}
     for v in "ABC":
-        m[f"c_{v}"] = float(limpias[limpias.variant == v].wall_ms_total.median())
-        m[f"d_{v}"] = float(runs[runs.variant == v].detected.mean())
-        det_v = runs[(runs.variant == v) & (runs.detected == 1)]
-        m[f"a_{v}"] = float(det_v.wall_ms_total.median()) if len(det_v) else m[f"c_{v}"]
-    m["r"] = float(runs[runs.variant == "A"].wall_ms_total.median())
-
-    def equilibrio(v, r):
-        """p*_V para un costo de recálculo r; None si verificar nunca conviene."""
-        den = m[f"d_{v}"] * (r + m[f"c_{v}"] - m[f"a_{v}"])
-        return (m[f"c_{v}"] - m["c_A"]) / den if den > 0 else None
-
+        m[f"c_{v}"] = limpias[limpias.variant == v].wall_ms_total.median() / 1000
+        m[f"d_{v}"] = runs[runs.variant == v].detected.mean()
+        det = runs[(runs.variant == v) & (runs.detected == 1)]
+        m[f"a_{v}"] = det.wall_ms_total.median() / 1000 if len(det) else m[f"c_{v}"]
+    m["r"] = runs[runs.variant == "A"].wall_ms_total.median() / 1000
     for v in ("B", "C"):
-        m[f"pe_{v}"] = equilibrio(v, m["r"])
+        m[f"pe_{v}"] = equilibrio(m, v, m["r"])
+    # Sensibilidad de C a k, el costo del recálculo medido en corridas limpias
+    # completas (r = k·c_A).
+    for k in (5, 10):
+        m[f"pe_C_k{k}"] = equilibrio(m, "C", k * m["c_A"])
 
-    L = []
-    def mac(nombre, valor):
-        L.append(f"\\newcommand{{\\{nombre}}}{{{valor}}}")
+    por_celda = runs.groupby(["fault", "variant"])
+    m["deteccion"] = por_celda.detected.mean().unstack().reindex(ORDER)
+    m["capa"] = por_celda.detect_layer.agg(lambda s: s.mode()[0]).unstack().reindex(ORDER)
+    capas = (runs.groupby(["variant", "detect_layer"]).size().unstack(fill_value=0)
+                 .reindex(columns=LAYERS, fill_value=0))
+    m["capas"] = capas.div(capas.sum(1), axis=0) * 100
 
-    # --- matriz
-    mac("Ncorridas", es(len(df)))
-    mac("Nclases", es(runs.fault.nunique()))
-    mac("Nreps", es(df.rep.nunique()))
-    mac("Ncontrol", es(len(limpias)))
-    mac("Nfilas", es(limpias.rows_source.median()))  # tamaño de la muestra, sin las filas que agrega la falla
-
-    # --- población: caracterización de la fuente real
-    mac("PobCrudas", es(pob["filas_crudas"]))
-    mac("PobFilas", es(pob["filas_poblacion"]))
-    mac("PobPctDescartadas", es(pob["pct_descartadas"], 2))
-    mac("PobNulos", es(pob["crudo_customer_id_nulo"]))
-    mac("PobPctNulos", es(100 * pob["crudo_customer_id_nulo"] / pob["filas_crudas"], 1))
-    mac("PobDuplicados", es(pob["crudo_clave_duplicada"]))
-    mac("PobPrecioFuera", es(pob["crudo_precio_fuera_dominio"]))
-    mac("PobCantidadFuera", es(pob["crudo_cantidad_fuera_dominio"]))
-    mac("PobPaises", es(pob["crudo_paises_distintos"]))
-    mac("PobFacturas", es(pob["facturas"]))
-
-    # --- detección y costo
-    for v in "ABC":
-        mac(f"Det{v}", es(m[f"d_{v}"] * 100))
-        mac(f"Costo{v}", es(m[f"c_{v}"] / 1000, 2))
-    mac("SobrecostoB", es((m["c_B"] - m["c_A"]) / m["c_A"] * 100, 1))
-    mac("SobrecostoC", es((m["c_C"] - m["c_A"]) / m["c_A"] * 100, 1))
-    mac("SobrecostoCseg", es((m["c_C"] - m["c_A"]) / 1000, 2))
-    mac("CostoReproceso", es(m["r"] / 1000, 2))
-    for v in ("B", "C"):
-        mac(f"Abortado{v}", es(m[f"a_{v}"] / 1000, 2))
-        pe = m[f"pe_{v}"]
-        mac(f"Equilibrio{v}", "no alcanzado" if pe is None else es(pe * 100, 1))
-        # el mismo punto expresado como "un defecto cada N corridas"
-        mac(f"Ventana{v}", "---" if not pe else es(1 / pe, 1))
-
-    # Sensibilidad de C a k, el costo de reprocesar medido en corridas limpias
-    # completas (r = k·c_A). Los nombres de macro de LaTeX no admiten dígitos.
-    for k, sufijo in ((5, "Cinco"), (10, "Diez")):
-        pk = equilibrio("C", k * m["c_A"])
-        mac(f"VentanaCK{sufijo}", "---" if not pk else es(1 / pk, 1))
-
-    # --- clases que las restricciones del motor no cubren
-    ciegas = [ETIQUETA_FALLA[f].lower() for f in ORDER if det.loc[f, "B"] == 0]
-    mac("CiegasB", " y ".join(ciegas) if ciegas else "ninguna")
-
-    # --- capa de detección
-    for v in "ABC":
-        for capa in LAYERS:
-            mac(f"Capa{v}{capa.capitalize()}", es(piv.loc[v, capa]))
-
-    # --- contaminación y desvío del total publicado (variante A)
     a = runs[runs.variant == "A"]
-    mac("ContamA", es(a.contaminated_fact.median()))
-    for f in ORDER:
-        s = a[a.fault == f]
-        mac(f"Contam{f.capitalize()}", es(s.contaminated_fact.median()))
-        d = s.gold_dev_pct.median()
-        mac(f"Desvio{f.capitalize()}", "no calculable" if pd.isna(d) else es(d, 2))
-    sri = a[a.fault == "ri"]
-    mac("SinRegionRi", es(sri.gold_null_region_lines.median()))
-    mac("ConsumoA", es(100 * a.reached_consumo.mean()))
-    mac("ConsumoC", es(100 * runs[runs.variant == "C"].reached_consumo.mean()))
+    m["contam_A"] = a.contaminated_fact.median()
+    m["consumo_A"] = a.groupby("fault")[["injected", "contaminated_fact", "gold_dev_pct",
+                                         "gold_null_region_lines"]].median().reindex(ORDER)
+    m["llega_A"] = a.reached_consumo.mean() * 100
+    m["llega_C"] = runs[runs.variant == "C"].reached_consumo.mean() * 100
 
-    # --- verificación y escritura
-    mac("GateC", es(limpias[limpias.variant == "C"].gate_ms.median() / 1000, 2))
-    mac("DdlB", es(limpias[limpias.variant == "B"].constraint_ddl_ms.median() / 1000, 2))
+    m["gate_C"] = limpias[limpias.variant == "C"].gate_ms.median() / 1000
+    m["ddl_B"] = limpias[limpias.variant == "B"].constraint_ddl_ms.median() / 1000
     # Volumen materializado, auditado con el registro de transacciones de Delta.
-    mac("DeltaFilas", es(limpias.delta_output_rows.median()))
-    mac("DeltaMB", es(limpias.delta_output_bytes.median() / 1e6, 2))
-
-    escribir(outdir, "metricas.tex",
-             "% Generado por src/analyze.py sobre results/raw_runs.csv. NO editar a mano.\n"
-             + "\n".join(L) + "\n")
+    m["delta_filas"] = limpias.delta_output_rows.median()
+    m["delta_mb"] = limpias.delta_output_bytes.median() / 1e6
     return m
+
+
+def tiempos_validos(m):
+    """Con una sola repetición no hay mediana: los tiempos no se interpretan."""
+    return m["reps"] > 1
+
+
+# ====================================================================== resumen
+def resumen(m, pob):
+    pct = lambda x: f"{es(x)} %"
+    L = [
+        "POBLACIÓN",
+        f"  {es(pob['filas_poblacion'])} de {es(pob['filas_crudas'])} filas cumplen el "
+        f"contrato de la fuente (se descarta el {es(pob['pct_descartadas'], 2)} %)",
+        f"  en el crudo: {es(pob['crudo_customer_id_nulo'])} filas sin cliente "
+        f"({es(100 * pob['crudo_customer_id_nulo'] / pob['filas_crudas'], 1)} %), "
+        f"{es(pob['crudo_clave_duplicada'])} claves duplicadas, "
+        f"{es(pob['crudo_precio_fuera_dominio'])} precios y "
+        f"{es(pob['crudo_cantidad_fuera_dominio'])} cantidades fuera de dominio",
+        f"  {es(pob['facturas'])} facturas, {es(pob['crudo_paises_distintos'])} países",
+        "",
+        "MATRIZ",
+        f"  {es(m['corridas'])} corridas: {m['clases']} fallas × 3 variantes × "
+        f"{m['reps']} repeticiones + {m['control']} de control",
+        f"  muestra de {es(m['filas'])} filas por corrida",
+        "",
+        "DETECCIÓN: corridas con falla que la detectan, y en qué capa",
+        f"  {'Clase de falla':<28}{'Dimensión':<14}{'A':<17}{'B':<17}C",
+    ]
+    for f in ORDER:
+        celdas = []
+        for v in "ABC":
+            d = m["deteccion"].loc[f, v]
+            celdas.append(pct(d * 100) + (f" {m['capa'].loc[f, v]}" if d else ""))
+        L.append(f"  {ETIQUETA_FALLA[f]:<28}{DIMENSION[f]:<14}"
+                 f"{celdas[0]:<17}{celdas[1]:<17}{celdas[2]}")
+    L.append(f"  {'Total':<42}" + "".join(f"{pct(m[f'd_{v}'] * 100):<17}" for v in "AB")
+             + pct(m["d_C"] * 100))
+    for v in "ABC":
+        L.append(f"  capa de detección {v}: " + ", ".join(
+            f"{c} {pct(m['capas'].loc[v, c])}" for c in LAYERS))
+
+    L += ["", "QUÉ LLEGA AL CONSUMO SIN VERIFICAR (variante A, medianas)",
+          f"  {'Clase de falla':<28}{'Inyectados':>12}{'En hechos':>12}{'Desvío del total':>20}"]
+    for f in ORDER:
+        s = m["consumo_A"].loc[f]
+        dev = "no calculable" if pd.isna(s.gold_dev_pct) else f"{es(s.gold_dev_pct, 2)} %"
+        L.append(f"  {ETIQUETA_FALLA[f]:<28}{es(s.injected):>12}"
+                 f"{es(s.contaminated_fact):>12}{dev:>20}")
+    L += [f"  registros defectuosos en hechos (A): {es(m['contam_A'])}",
+          f"  líneas sin región en gold (ri): {es(m['consumo_A'].loc['ri'].gold_null_region_lines)}",
+          f"  llegan al consumo: A {pct(m['llega_A'])}, C {pct(m['llega_C'])}",
+          f"  volumen escrito por corrida de control (DESCRIBE HISTORY): "
+          f"{es(m['delta_filas'])} filas, {es(m['delta_mb'], 2)} MB",
+          "", "COSTO (segundos, medianas)"]
+    if not tiempos_validos(m):
+        L.append("  una sola repetición: los tiempos no se interpretan (make matriz)")
+        return "\n".join(L) + "\n"
+
+    def ventana(pe):
+        return "no alcanzado" if pe is None else (
+            f"{es(pe * 100, 1)} % (un defecto cada {es(1 / pe, 1)} corridas)")
+
+    sobre = {v: (m[f"c_{v}"] - m["c_A"]) / m["c_A"] * 100 for v in "BC"}
+    q_B = costo(m, "B", 1)
+    L += [f"  corrida sin defecto: A {es(m['c_A'], 2)}, B {es(m['c_B'], 2)} "
+          f"(+{es(sobre['B'], 1)} %), C {es(m['c_C'], 2)} (+{es(sobre['C'], 1)} %, "
+          f"+{es(m['c_C'] - m['c_A'], 2)} s)",
+          f"  verificación de C: {es(m['gate_C'], 2)}",
+          f"  restricciones de B al crear la tabla: {es(m['ddl_B'], 2)}",
+          f"  corrida que aborta: B {es(m['a_B'], 2)}, C {es(m['a_C'], 2)}",
+          f"  recálculo (corrida con defecto que llega al consumo): {es(m['r'], 2)}",
+          "  costo por corrida, con p la proporción de corridas con defecto:",
+          f"    A = {es(m['c_A'], 2)} + {es(m['r'], 2)} × p",
+          f"    B = {es(m['c_B'], 2)} × (1 − p) + {es(q_B, 2)} × p",
+          f"    C = {es(m['c_C'], 2)} × (1 − p) + {es(m['a_C'], 2)} × p",
+          f"  equilibrio frente a A: C desde {ventana(m['pe_C'])}",
+          f"                         B desde {ventana(m['pe_B'])}",
+          "  si el recálculo cuesta k corridas limpias, C conviene desde un defecto cada: "
+          + ", ".join(f"{es(1 / m[f'pe_C_k{k}'], 1) if m[f'pe_C_k{k}'] else '—'} (k = {k})"
+                      for k in (5, 10))]
+    return "\n".join(L) + "\n"
+
+
+# ====================================================================== tablero
+def _ejes(ax, grilla):
+    ax.grid(axis=grilla, color=GRILLA, linewidth=0.6, zorder=0)
+    ax.tick_params(length=0, colors=TENUE, labelsize=10)
+    for lado in ("top", "right"):
+        ax.spines[lado].set_visible(False)
+    for lado in ("bottom", "left"):
+        ax.spines[lado].set_color(GRILLA)
+
+
+def _matriz(ax, m):
+    n = len(ORDER)
+    for i, f in enumerate(ORDER):
+        for j, v in enumerate("ABC"):
+            d = m["deteccion"].loc[f, v]
+            c = m["capa"].loc[f, v] if d else "ninguna"
+            ax.add_patch(Rectangle((j + 0.03, i + 0.06), 0.94, 0.88, facecolor=RAMPA_CAPA[c],
+                                   edgecolor="none"))
+            # si detecta solo en algunas repeticiones, va el porcentaje
+            rotulo = ETIQUETA_CAPA[c] + ("" if d in (0, 1) else f" ({es(d * 100)} %)")
+            ax.text(j + 0.5, i + 0.5, rotulo, ha="center", va="center", fontsize=10.5,
+                    color=TINTA if c == "ingesta" else "white")
+    ax.plot([0, 3], [n + 0.15, n + 0.15], color=TENUE, linewidth=0.8, clip_on=False)
+    ax.text(-0.06, n + 0.6, "Total detectado", ha="right", va="center", fontsize=10.5,
+            color=TINTA)
+    for j, v in enumerate("ABC"):
+        ax.text(j + 0.5, n + 0.6, f"{es(m[f'd_{v}'] * 100)} %", ha="center", va="center",
+                fontsize=12, fontweight="bold", color=TINTA)
+    ax.set_xlim(0, 3); ax.set_ylim(n + 1, 0)
+    ax.set_xticks([0.5, 1.5, 2.5])
+    ax.set_xticklabels(["A\nsin verificación", "B\nrestricciones del motor",
+                        "C\ncontratos ODCS"], fontsize=10.5)
+    ax.xaxis.tick_top()
+    ax.set_yticks([i + 0.5 for i in range(n)])
+    ax.set_yticklabels([ETIQUETA_FALLA[f] for f in ORDER], fontsize=10.5)
+    ax.tick_params(length=0, colors=TINTA)
+    for lado in ax.spines.values():
+        lado.set_visible(False)
+    ax.set_title("En qué capa se detecta cada falla", loc="left", fontsize=12.5,
+                 color=TINTA, pad=46)
+
+
+def _barras(ax, m):
+    vals = [m[f"c_{v}"] for v in "ABC"]
+    ax.barh(range(3), vals, height=0.5, color=[SERIE[v] for v in "ABC"], zorder=3)
+    for i, v in enumerate("ABC"):
+        extra = "" if v == "A" else f"  (+{es((m[f'c_{v}'] / m['c_A'] - 1) * 100, 1)} %)"
+        ax.text(vals[i] + max(vals) * 0.015, i, f"{es(vals[i], 2)} s{extra}", va="center",
+                fontsize=10.5, color=TINTA)
+    ax.set_yticks(range(3)); ax.set_yticklabels([VARIANTE[v] for v in "ABC"], fontsize=10.5)
+    ax.invert_yaxis()
+    ax.set_xlim(0, max(vals) * 1.45)
+    ax.set_xticks(range(0, int(max(vals) * 1.45) + 1, 5))
+    ax.set_xlabel("segundos, mediana", fontsize=10, color=TENUE)
+    _ejes(ax, "x")
+    ax.spines["left"].set_visible(False)
+    ax.set_title("Costo de una corrida sin defecto", loc="left", fontsize=12.5, color=TINTA)
+
+
+def _rectas(ax, m):
+    cruces = [m[f"pe_{v}"] for v in ("B", "C") if m[f"pe_{v}"]]
+    tope = min(1.0, max(cruces) * 1.35) if cruces else 0.25
+    ps = [i * tope / 200 for i in range(201)]
+    for v in "ABC":
+        ax.plot([p * 100 for p in ps], [costo(m, v, p) for p in ps], color=SERIE[v],
+                linewidth=2, linestyle=TRAZO[v], label=VARIANTE[v], zorder=3)
+    for v in ("B", "C"):
+        pe = m[f"pe_{v}"]
+        if pe is None or not 0 < pe <= tope:
+            continue
+        yv = costo(m, v, pe)
+        ax.plot([pe * 100], [yv], "o", ms=8, color=SERIE[v], markeredgecolor=FONDO,
+                markeredgewidth=2, zorder=5)
+        ax.annotate(f"{es(pe * 100, 1)} %", (pe * 100, yv), textcoords="offset points",
+                    xytext=(8, -12), va="top", fontsize=10, color=TINTA, zorder=6,
+                    # halo: el rótulo nunca queda cruzado por una recta
+                    path_effects=[pe_fx.withStroke(linewidth=3, foreground=FONDO)])
+    extremos = [costo(m, v, p) for v in "ABC" for p in (0, tope)]
+    ax.set_xlim(0, tope * 100)
+    # lugar arriba para la leyenda
+    ax.set_ylim(min(extremos) - 0.6, max(extremos) + 2.4)
+    ax.set_xlabel("corridas con defecto [%]", fontsize=10, color=TENUE)
+    ax.set_ylabel("costo por corrida [s]", fontsize=10, color=TENUE)
+    _ejes(ax, "y")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: es(y)))
+    ax.legend(loc="upper right", frameon=False, fontsize=9.5, handlelength=2.6)
+    ax.set_title("Costo por corrida según cuántas traen un defecto", loc="left",
+                 fontsize=12.5, color=TINTA)
+
+    def desde(v):
+        pe = m[f"pe_{v}"]
+        return "no conviene nunca" if pe is None else (
+            f"desde el {es(pe * 100, 1)} % (un defecto cada {es(1 / pe, 1)} corridas)")
+    ax.text(-0.14, -0.24, f"Con contratos, verificar conviene {desde('C')}.\n"
+            f"Con las restricciones del motor, {desde('B')}.", transform=ax.transAxes,
+            fontsize=9.5, color=TINTA, va="top", linespacing=1.6)
+
+
+def tablero(m, pob, salida):
+    plt.rcParams.update({"font.family": "DejaVu Sans", "text.color": TINTA,
+                         "axes.labelcolor": TENUE, "figure.facecolor": FONDO,
+                         "axes.facecolor": FONDO, "savefig.facecolor": FONDO})
+    fig = plt.figure(figsize=(15, 9), dpi=130)
+    fig.text(0.03, 0.94, "Detección y costo por variante",
+             fontsize=18, fontweight="bold", color=TINTA)
+    fig.text(0.03, 0.875,
+             f"{es(m['corridas'])} corridas sobre Online Retail II, {m['reps']} repeticiones, "
+             f"muestra de {es(m['filas'])} filas por corrida.\n"
+             f"De la fuente, {es(pob['filas_poblacion'])} de {es(pob['filas_crudas'])} filas "
+             f"cumplen el contrato (se descarta el {es(pob['pct_descartadas'], 2)} %).",
+             fontsize=11, color=TENUE, linespacing=1.5)
+
+    g = fig.add_gridspec(2, 2, width_ratios=[1.05, 1.0], height_ratios=[0.8, 1.2],
+                         left=0.15, right=0.97, top=0.74, bottom=0.19,
+                         hspace=0.5, wspace=0.42)
+    _matriz(fig.add_subplot(g[:, 0]), m)
+    _barras(fig.add_subplot(g[0, 1]), m)
+    _rectas(fig.add_subplot(g[1, 1]), m)
+    fig.savefig(salida)
+    plt.close(fig)
 
 
 # ========================================================================= main
 def validar(df):
-    """Si el CSV no cumple estas condiciones, los artefactos no significan lo
-    que dice el paper: no se genera nada."""
+    """Si el CSV no cumple estas condiciones, lo medido no significa lo que dice
+    el paper: no se genera nada."""
     # Un fallo de infraestructura no puede contarse como detección.
     errores = df[df.detected == -1]
     if len(errores):
@@ -349,32 +354,26 @@ def validar(df):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", default="results/raw_runs.csv",
-                    help="poblacion.json se lee del mismo directorio")
-    ap.add_argument("--outdir", default="latex/generado")
+                    help="poblacion.json se lee del mismo directorio y la salida va ahí")
     a = ap.parse_args()
 
     df = pd.read_csv(a.inp)
     validar(df)
-    runs = df[df.fault != "ninguna"]
-    limpias = df[df.fault == "ninguna"]
-    with open(os.path.join(os.path.dirname(a.inp) or ".", "poblacion.json")) as fh:
+    outdir = os.path.dirname(a.inp) or "."
+    with open(os.path.join(outdir, "poblacion.json")) as fh:
         pob = json.load(fh)
 
-    os.makedirs(a.outdir, exist_ok=True)
-    estilo()
-    det = tabla1(runs, a.outdir)
-    tabla2(runs, a.outdir)
-    piv = figura1(runs, a.outdir)
-    m = metricas(df, runs, limpias, det, piv, pob, a.outdir)
-    figura2(m, a.outdir)
-
-    print(f"OK -> {a.outdir}")
-    print(f"   detección       A={m['d_A']*100:.0f}%  B={m['d_B']*100:.0f}%  C={m['d_C']*100:.0f}%")
-    print(f"   costo limpio[s] A={m['c_A']/1000:.2f}  B={m['c_B']/1000:.2f}  C={m['c_C']/1000:.2f}")
-    for v in ("B", "C"):
-        pe = m[f"pe_{v}"]
-        print(f"   equilibrio {v} vs A: " +
-              ("no alcanzado" if pe is None else f"{pe*100:.2f}% de corridas con defecto"))
+    m = medir(df)
+    texto = resumen(m, pob)
+    with open(os.path.join(outdir, "resumen.txt"), "w") as fh:
+        fh.write(texto)
+    print(texto)
+    # Con una sola repetición los tiempos no se comparan: sin tablero.
+    if tiempos_validos(m):
+        tablero(m, pob, os.path.join(outdir, "tablero.png"))
+        print(f"OK -> {outdir}/resumen.txt y {outdir}/tablero.png")
+    else:
+        print(f"OK -> {outdir}/resumen.txt")
 
 
 if __name__ == "__main__":

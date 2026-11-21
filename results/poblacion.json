@@ -1,0 +1,21 @@
+{
+  "filas_crudas": 1067371,
+  "crudo_customer_id_nulo": 243007,
+  "crudo_clave_duplicada": 45947,
+  "crudo_precio_fuera_dominio": 5,
+  "crudo_cantidad_fuera_dominio": 160,
+  "crudo_pais_fuera_dimension": 0,
+  "crudo_descripcion_nula": 4382,
+  "crudo_paises_distintos": 43,
+  "desc_customer_id_nulo": 243007,
+  "desc_precio_fuera_dominio": 0,
+  "desc_cantidad_fuera_dominio": 51,
+  "desc_pais_fuera_dimension": 0,
+  "desc_clave_duplicada": 37169,
+  "filas_poblacion": 787144,
+  "descartadas": 280227,
+  "pct_descartadas": 26.25,
+  "facturas": 44863,
+  "paises": 41,
+  "muestra_filas_objetivo": 50000
+}
